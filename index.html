@@ -3,17 +3,22 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Calorie Log</title><link rel="stylesheet" href="style.css">
 </head><body><main>
-<div class="row sp"><h1>🥗 Calorie Log</h1><button class="g" id="goalBtn">Goal: <span id="goalTxt"></span></button></div>
+<div class="row sp"><h1>🥗 Nutrition Log</h1><button class="g" id="goalBtn">Goal: <span id="goalTxt"></span></button></div>
 
 <div class="card hero">
   <div class="row sp">
     <button class="g" id="prev" aria-label="Previous day">&#8249;</button>
-    <div style="text-align:center"><div class="mute" id="dayLabel"></div><div class="big"><span id="total">0</span> <span class="mute">kcal</span></div></div>
+    <div style="text-align:center"><div class="mute" id="dayLabel"></div><div class="big"><span id="total">0</span> <span class="mute">kcal</span></div><div class="mute" id="macros"></div></div>
     <button class="g" id="next" aria-label="Next day">&#8250;</button>
   </div>
   <div class="bar" id="bar"><i id="fill" style="width:0"></i></div>
   <div class="mute" id="remain" style="margin-top:8px;text-align:center"></div>
 </div>
+
+<details class="card"><summary>All nutrients for the day</summary>
+  <div id="nutRows"></div>
+  <div class="mute">Bars show % of FDA daily values (2,000 kcal diet). Red bars mean you passed a daily limit.</div>
+</details>
 
 <div class="card">
   <div class="row">
@@ -22,12 +27,21 @@
   </div>
   <input type="file" id="cam" accept="image/*" capture="environment" class="hide">
   <input type="file" id="up" accept="image/*" class="hide">
-  <div class="row" style="margin-top:10px"><button class="g grow" id="manualBtn">+ Add manually</button>
-    <a class="btn g grow" href="log.html" target="_blank" rel="noopener">Open full log &#8599;</a></div>
+  <div class="row" style="margin-top:10px"><button class="grow" id="scanBtn">&#9638; Scan barcode</button><button class="g grow" id="manualBtn">+ Add manually</button></div>
+  <div class="row" style="margin-top:6px"><a class="btn g grow" href="log.html" target="_blank" rel="noopener">Open full log &#8599;</a></div>
   <details style="margin-top:8px" id="setup"><summary>Gemini API key (needed for photo analysis)</summary>
-    <p class="mute">Get a free key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>. It is stored only in this browser and sent only to Google’s Gemini API.</p>
-    <div class="row"><input id="key" type="password" placeholder="AIza..." autocomplete="off"><button id="keySave">Save</button></div>
+    <p class="mute">Get a free key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>. It is stored only in this browser and sent only to Google’s Gemini API. Barcode lookups use Open Food Facts and need no key.</p>
+    <div class="row"><input id="key" type="password" placeholder="AIza..." autocomplete="off"><button id="keySave">Save</button><button id="keyTest">Test</button></div>
+    <div class="mute" id="keyMsg" style="margin-top:8px"></div>
   </details>
+</div>
+
+<div class="card hide" id="scan">
+  <video id="video" playsinline muted></video>
+  <div class="mute" id="scanMsg" style="margin-bottom:10px"></div>
+  <div class="row"><input id="code" inputmode="numeric" placeholder="Or type the barcode number"><button class="p" id="codeGo">Look up</button></div>
+  <div class="row" style="margin-top:8px"><label class="btn grow" for="bcfile">Scan from a photo</label><button class="grow" id="scanClose">Close</button></div>
+  <input type="file" id="bcfile" accept="image/*" class="hide">
 </div>
 
 <div class="card hide" id="review">
@@ -38,119 +52,245 @@
     <div id="items"></div>
     <button class="g" id="addItem">+ Add item</button>
     <div id="note" class="mute" style="margin:8px 0"></div>
-    <div class="row sp" style="margin:8px 0 12px"><b>Total</b><b><span id="rTotal">0</span> kcal</b></div>
+    <div class="row sp" style="margin:8px 0 2px"><b>Total</b><b><span id="rTotal">0</span> kcal</b></div>
+    <div class="macro" id="rMacros" style="margin-bottom:12px"></div>
     <div class="row"><button class="grow" id="cancel">Cancel</button><button class="p grow" id="save">Save to log</button></div>
   </div>
   <div class="err hide" id="err"></div>
 </div>
 
 <div class="card"><div id="list"></div><div class="mute" id="empty">Nothing logged for this day yet.</div></div>
-<p class="mute" style="text-align:center">Calorie estimates from photos are approximate. Adjust values for accuracy.</p>
+<p class="mute" style="text-align:center">Estimates from photos are approximate. Barcode data comes from the community-run Open Food Facts database and can be incomplete. Always check the numbers.</p>
 </main>
 <script src="app.js"></script>
 <script>
 (function(){
-var MODEL='gemini-2.5-flash', KEYNAME='calorielog.geminikey';
-var $=function(i){return document.getElementById(i)}, esc=CAL.esc;
-var state=CAL.load(), day=CAL.today(), cur=null;
+var MODELS=['gemini-flash-latest','gemini-2.5-flash','gemini-2.5-flash-lite'], KEYNAME='calorielog.geminikey', BASE='https://generativelanguage.googleapis.com/v1beta/';
+var $=function(i){return document.getElementById(i)}, esc=CAL.esc, NUT=CAL.NUT, EXTRA=NUT.slice(1);
+var state=CAL.load(), day=CAL.today(), cur=null, stream=null, timer=null, zx=null, looking=false;
+
 function apiKey(){try{return localStorage.getItem(KEYNAME)||''}catch(e){return ''}}
 function showErr(m){$('err').textContent=m;$('err').classList.remove('hide');$('review').classList.remove('hide')}
 function persist(){if(!CAL.save(state))showErr('Could not save to browser storage.')}
+function num(v){v=+v;return isFinite(v)&&v>0?CAL.r1(v):0}
+function blankItem(){var o={name:'',portion:''};NUT.forEach(function(n){o[n.k]=0});return o}
+function normItem(i){var o={name:String(i.name||'').slice(0,80),portion:String(i.portion||'').slice(0,60)};
+  NUT.forEach(function(n){o[n.k]=n.k==='calories'?Math.round(num(i[n.k])):num(i[n.k])});return o}
 
 function render(){
   var es=state.entries.filter(function(e){return e.date===day}).sort(function(a,b){return b.ts-a.ts});
-  var tot=es.reduce(function(s,e){return s+e.total},0);
+  var all=[];es.forEach(function(e){all=all.concat(e.items)});var t=CAL.sum(all),tot=t.calories;
   $('dayLabel').textContent=day===CAL.today()?'Today':new Date(day+'T00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'});
-  $('total').textContent=tot;$('goalTxt').textContent=state.goal;
+  $('total').textContent=tot;$('goalTxt').textContent=state.goal;$('macros').textContent=CAL.macros(all);
   $('fill').style.width=Math.min(100,tot/state.goal*100)+'%';$('bar').classList.toggle('over',tot>state.goal);
   var d=state.goal-tot;$('remain').textContent=d>=0?d+' kcal remaining':(-d)+' kcal over goal';
+  $('nutRows').innerHTML=CAL.rows(t);
   $('next').disabled=day>=CAL.today();$('empty').classList.toggle('hide',es.length>0);
   $('list').innerHTML=es.map(function(e){
     var tm=new Date(e.ts).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});
     return '<div class="entry">'+(e.thumb?'<img src="'+e.thumb+'" alt="">':'<div class="ph"></div>')+
-    '<div class="t"><b>'+esc(e.items.map(function(i){return i.name}).join(', ')||e.meal)+'</b><span class="mute"><i class="tag m-'+esc(e.meal)+'">'+esc(e.meal)+'</i> '+tm+'</span></div>'+
-    '<div><b>'+e.total+'</b> <span class="mute">kcal</span></div><button class="g" data-del="'+e.id+'" aria-label="Delete">&#10005;</button></div>';
+    '<div class="t"><b>'+esc(e.items.map(function(i){return i.name}).join(', ')||e.meal)+'</b><span class="mute"><i class="tag m-'+esc(e.meal)+'">'+esc(e.meal)+'</i> '+tm+'</span><div class="macro">'+CAL.macros(e.items)+'</div></div>'+
+    '<div><b>'+CAL.sum(e.items).calories+'</b> <span class="mute">kcal</span></div><button class="g" data-del="'+e.id+'" aria-label="Delete">&#10005;</button></div>';
   }).join('');
 }
 function mealByTime(){var h=new Date().getHours();return h<10?'Breakfast':h<15?'Lunch':h<21?'Dinner':'Snack'}
 function openReview(img){
   cur={items:[],thumb:img||null};$('review').classList.remove('hide');$('err').classList.add('hide');
-  $('preview').classList.toggle('hide',!img);if(img)$('preview').src=img;$('meal').value=mealByTime();
+  $('preview').classList.toggle('hide',!img);if(img)$('preview').src=img;$('meal').value=mealByTime();$('note').textContent='';
 }
 function closeReview(){cur=null;['review','editor','status','err'].forEach(function(i){$(i).classList.add('hide')});$('cam').value='';$('up').value=''}
 function drawItems(){
   $('items').innerHTML=cur.items.map(function(it,i){
-    return '<div class="item"><input data-n="'+i+'" value="'+esc(it.name).replace(/"/g,'&quot;')+'" placeholder="Food">'+
-    '<input data-k="'+i+'" type="number" inputmode="numeric" min="0" value="'+it.calories+'" aria-label="kcal">'+
-    '<button class="g" data-x="'+i+'" aria-label="Remove">&#10005;</button>'+(it.portion?'<small>'+esc(it.portion)+'</small>':'')+'</div>';
+    var a='data-i="'+i+'" ';
+    return '<div class="itembox"><div class="item"><input '+a+'data-k="name" value="'+esc(it.name).replace(/"/g,'&quot;')+'" placeholder="Food">'+
+    '<input '+a+'data-k="calories" type="number" inputmode="decimal" min="0" value="'+it.calories+'" aria-label="kcal">'+
+    '<button class="g" data-x="'+i+'" aria-label="Remove">&#10005;</button></div>'+
+    (it.base?'<div class="row" style="margin:4px 0 6px"><span class="mute">Amount (g)</span><input '+a+'data-k="grams" type="number" inputmode="decimal" min="0" value="'+it.grams+'" style="width:110px"></div>':(it.portion?'<div class="mute">'+esc(it.portion)+'</div>':''))+
+    '<details><summary class="mute">All nutrients</summary><div class="ngrid">'+EXTRA.map(function(n){
+      return '<label>'+n.l+' ('+n.u+')<input '+a+'data-k="'+n.k+'" type="number" step="any" min="0" value="'+it[n.k]+'"></label>'}).join('')+'</div></details></div>';
   }).join('');sumItems();
 }
-function sumItems(){$('rTotal').textContent=cur.items.reduce(function(s,i){return s+(+i.calories||0)},0)}
+function sumItems(){var t=CAL.sum(cur.items);$('rTotal').textContent=t.calories;$('rMacros').textContent=CAL.macros(cur.items)}
+function rescale(i){var it=cur.items[i];NUT.forEach(function(n){var v=(it.base[n.k]||0)*it.grams/100;it[n.k]=n.k==='calories'?Math.round(v):CAL.r1(v);
+  var el=document.querySelector('[data-i="'+i+'"][data-k="'+n.k+'"]');if(el)el.value=it[n.k]});it.portion=it.grams+' g'}
 
-function resize(file,max,q){
-  return new Promise(function(res,rej){
-    var url=URL.createObjectURL(file),im=new Image();
-    im.onload=function(){
-      var r=Math.min(1,max/Math.max(im.width,im.height)),c=document.createElement('canvas');
-      c.width=Math.round(im.width*r);c.height=Math.round(im.height*r);
-      c.getContext('2d').drawImage(im,0,0,c.width,c.height);URL.revokeObjectURL(url);
-      res(c.toDataURL('image/jpeg',q));
-    };
-    im.onerror=function(){URL.revokeObjectURL(url);rej(new Error('Could not read that image.'))};
-    im.src=url;
-  });
+/* ---------- photo handling ---------- */
+async function decode(file){
+  if(window.createImageBitmap){try{return await createImageBitmap(file,{imageOrientation:'from-image'})}catch(e){}}
+  function viaImg(url,revoke){return new Promise(function(res,rej){var im=new Image();
+    im.onload=function(){if(revoke)URL.revokeObjectURL(url);res(im)};
+    im.onerror=function(){if(revoke)URL.revokeObjectURL(url);rej(new Error('decode'))};im.src=url})}
+  try{return await viaImg(URL.createObjectURL(file),true)}catch(e){}
+  var dataUrl=await new Promise(function(res,rej){var r=new FileReader();r.onload=function(){res(r.result)};r.onerror=function(){rej(new Error('read'))};r.readAsDataURL(file)});
+  return viaImg(dataUrl,false);
+}
+function scaled(src,max,q){
+  var w=src.width||src.naturalWidth,h=src.height||src.naturalHeight,r=Math.min(1,max/Math.max(w,h)),c=document.createElement('canvas');
+  c.width=Math.max(1,Math.round(w*r));c.height=Math.max(1,Math.round(h*r));
+  var x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.drawImage(src,0,0,c.width,c.height);
+  return c.toDataURL('image/jpeg',q);
+}
+async function prepare(file){
+  if(file.type&&!/^image\//.test(file.type))throw new Error('That file is not an image.');
+  var src;
+  try{src=await decode(file)}catch(e){
+    throw new Error('This browser could not open that photo'+(/hei[cf]/i.test(file.type+file.name)?' (HEIC format). On iPhone choose Settings > Camera > Formats > Most Compatible, or pick a JPEG/PNG.':'. Try a JPEG or PNG, or a smaller photo.'));
+  }
+  try{var out={big:scaled(src,1280,.85),small:scaled(src,160,.6)};if(src.close)src.close();return out}
+  catch(e){throw new Error('The photo is too large for this device to process. Try a smaller one.')}
 }
 async function ask(b64){
-  var prompt='You are a nutrition assistant. Estimate what is eaten in this meal photo. Return ONLY JSON: {"items":[{"name":string,"portion":string,"calories":integer}],"note":string}. '+
-  'List each distinct food or drink with a realistic visible portion and its kcal. If there is no food, return {"items":[],"note":"No food detected."}. Keep note under 20 words (e.g., confidence or hidden ingredients).';
-  var r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+MODEL+':generateContent',{method:'POST',headers:{
-    'content-type':'application/json','x-goog-api-key':apiKey()},
-    body:JSON.stringify({contents:[{parts:[{inline_data:{mime_type:'image/jpeg',data:b64}},{text:prompt}]}],
-      generationConfig:{responseMimeType:'application/json',temperature:0.2}})});
-  var j=await r.json();
-  if(!r.ok)throw new Error((j.error&&j.error.message)||('Request failed ('+r.status+')'));
-  var c=j.candidates&&j.candidates[0],parts=(c&&c.content&&c.content.parts)||[];
-  var txt=parts.map(function(p){return p.text||''}).join('').replace(/```json|```/g,'').trim();
-  if(!txt)throw new Error('The model returned no answer');
-  return JSON.parse(txt);
+  var prompt='You are a nutrition assistant. Estimate what is eaten in this meal photo. Return ONLY JSON: {"items":[{"name":string,"portion":string,"calories":number,...}],"note":string}. '+
+  'Each item must have name, portion, and these numeric fields (units in brackets): '+NUT.map(function(n){return n.k+' ('+n.u+')'}).join(', ')+'. '+
+  'List each distinct food or drink with a realistic visible portion and its estimated nutrition for that whole portion. If there is no food, return {"items":[],"note":"No food detected."}. Keep note under 20 words (e.g., confidence or hidden ingredients).';
+  var body=JSON.stringify({contents:[{parts:[{inline_data:{mime_type:'image/jpeg',data:b64}},{text:prompt}]}],
+    generationConfig:{responseMimeType:'application/json',temperature:0.2,maxOutputTokens:4096}});
+  var lastErr=null;
+  for(var m=0;m<MODELS.length;m++){
+    var r,j;
+    try{r=await fetch(BASE+'models/'+MODELS[m]+':generateContent',{method:'POST',headers:{'content-type':'application/json','x-goog-api-key':apiKey()},body:body})}
+    catch(e){throw new Error('Network error: could not reach Google. Check your connection or turn off ad/privacy blockers for this site.')}
+    try{j=await r.json()}catch(e){j={}}
+    if(r.ok){
+      var c=j.candidates&&j.candidates[0],parts=(c&&c.content&&c.content.parts)||[];
+      var txt=parts.map(function(p){return p.thought?'':(p.text||'')}).join('');
+      if(!txt)throw new Error('The model returned no answer ('+((j.promptFeedback&&j.promptFeedback.blockReason)||(c&&c.finishReason)||'empty response')+')');
+      var a=txt.indexOf('{'),z=txt.lastIndexOf('}');
+      if(a<0||z<a)throw new Error('Unexpected reply from the model');
+      try{return JSON.parse(txt.slice(a,z+1))}catch(e){throw new Error('Could not read the model reply as JSON')}
+    }
+    lastErr=new Error(((j.error&&j.error.message)||('HTTP '+r.status))+' ['+r.status+', '+MODELS[m]+']');
+    if(r.status===404||r.status===429||r.status===503)continue;
+    break;
+  }
+  throw lastErr||new Error('Request failed');
 }
 async function analyze(file){
-  var big,small;
-  try{big=await resize(file,1280,.85);small=await resize(file,160,.6)}catch(e){openReview(null);showErr(e.message);return}
-  openReview(big);cur.thumb=small;
-  var blank=function(){cur.items=[{name:'',portion:'',calories:0}];$('editor').classList.remove('hide');drawItems()};
+  stopScan();$('scan').classList.add('hide');
+  var blank=function(){cur.items=[blankItem()];$('editor').classList.remove('hide');drawItems()};
+  var img;
+  try{img=await prepare(file)}catch(e){openReview(null);showErr(e.message+' You can still enter the meal manually.');blank();return}
+  openReview(img.big);cur.thumb=img.small;
   if(!apiKey()){$('setup').open=true;showErr('Add your API key below to analyze photos, or enter the meal manually.');blank();return}
   $('status').innerHTML='<span class="spin"></span>Analyzing your meal…';$('status').classList.remove('hide');
   try{
-    var out=await ask(big.split(',')[1]);
-    cur.items=(out.items||[]).map(function(i){return{name:String(i.name||''),portion:String(i.portion||''),calories:Math.max(0,Math.round(+i.calories||0))}});
-    if(!cur.items.length)cur.items=[{name:'',portion:'',calories:0}];
+    var out=await ask(img.big.split(',')[1]);
+    cur.items=(out.items||[]).map(normItem);if(!cur.items.length)cur.items=[blankItem()];
     $('note').textContent=out.note||'';$('status').classList.add('hide');$('editor').classList.remove('hide');drawItems();
   }catch(e){$('status').classList.add('hide');showErr((e.message||'Analysis failed')+'. You can edit manually.');blank()}
 }
-function onFile(e){var f=e.target.files&&e.target.files[0];if(f)analyze(f)}
+
+/* ---------- barcode scanning ---------- */
+function scanMsg(m){$('scanMsg').textContent=m}
+function stopScan(){
+  if(timer){clearInterval(timer);timer=null}
+  if(zx){try{zx.reset()}catch(e){}zx=null}
+  if(stream){stream.getTracks().forEach(function(t){t.stop()});stream=null}
+  $('video').srcObject=null;
+}
+function loadZX(){return new Promise(function(res,rej){
+  if(window.ZXing)return res();var s=document.createElement('script');
+  s.src='https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js';s.onload=res;
+  s.onerror=function(){rej(new Error('Could not load the scanner library'))};document.head.appendChild(s)})}
+async function startScan(){
+  closeReview();$('scan').classList.remove('hide');$('video').classList.remove('hide');stopScan();
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){scanMsg('Live camera needs HTTPS. Type the number or scan from a photo.');$('video').classList.add('hide');return}
+  scanMsg('Starting camera…');
+  try{
+    if(window.BarcodeDetector){
+      var det;try{det=new BarcodeDetector({formats:['ean_13','ean_8','upc_a','upc_e','code_128']})}catch(e){det=new BarcodeDetector()}
+      stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});
+      $('video').srcObject=stream;await $('video').play();scanMsg('Point the camera at the barcode.');
+      var busy=false;
+      timer=setInterval(async function(){if(busy)return;busy=true;
+        try{var r=await det.detect($('video'));if(r.length){lookup(r[0].rawValue)}}catch(e){}busy=false},300);
+    }else{
+      await loadZX();zx=new ZXing.BrowserMultiFormatReader();scanMsg('Point the camera at the barcode.');
+      zx.decodeFromConstraints({video:{facingMode:'environment'},audio:false},$('video'),function(res){if(res)lookup(res.getText())});
+    }
+  }catch(e){
+    $('video').classList.add('hide');
+    scanMsg(e&&e.name==='NotAllowedError'?'Camera permission was denied. Type the number or scan from a photo.':'Could not start the camera ('+((e&&e.message)||'error')+'). Type the number or scan from a photo.');
+  }
+}
+async function scanPhoto(file){
+  scanMsg('Reading barcode…');
+  try{
+    var code=null;
+    if(window.BarcodeDetector){var bmp=await createImageBitmap(file),r=await new BarcodeDetector().detect(bmp);if(r.length)code=r[0].rawValue}
+    else{await loadZX();var url=URL.createObjectURL(file);try{code=(await new ZXing.BrowserMultiFormatReader().decodeFromImageUrl(url)).getText()}finally{URL.revokeObjectURL(url)}}
+    if(code)lookup(code);else scanMsg('No barcode found in that photo.');
+  }catch(e){scanMsg('No barcode found in that photo. Try a sharper, closer shot, or type the number.')}
+}
+async function lookup(code){
+  if(looking)return;looking=true;stopScan();
+  try{
+    code=String(code).replace(/\D/g,'');
+    if(code.length<6){scanMsg('Enter the digits printed under the barcode.');return}
+    scanMsg('Looking up '+code+'…');$('video').classList.add('hide');
+    var j;
+    try{var r=await fetch('https://world.openfoodfacts.org/api/v2/product/'+code+'.json?fields=product_name,brands,serving_quantity,nutriments');j=await r.json()}
+    catch(e){scanMsg('Could not reach Open Food Facts. Check your connection and try again.');return}
+    if(!j||j.status!==1||!j.product){scanMsg('Product '+code+' was not found in Open Food Facts. Try a photo of the food, or add it manually.');return}
+    var p=j.product,nu=p.nutriments||{},f=function(k){return +nu[k]||0},b={};
+    b.calories=nu['energy-kcal_100g']!=null?f('energy-kcal_100g'):f('energy_100g')/4.184;
+    b.protein=f('proteins_100g');b.carbs=f('carbohydrates_100g');b.fat=f('fat_100g');b.satfat=f('saturated-fat_100g');
+    b.fiber=f('fiber_100g');b.sugar=f('sugars_100g');
+    b.sodium=(nu.sodium_100g!=null?f('sodium_100g'):f('salt_100g')/2.5)*1000;
+    b.chol=f('cholesterol_100g')*1000;b.potassium=f('potassium_100g')*1000;b.calcium=f('calcium_100g')*1000;
+    b.iron=f('iron_100g')*1000;b.vitc=f('vitamin-c_100g')*1000;b.vitd=f('vitamin-d_100g')*1e6;
+    var g=+p.serving_quantity||100,it=blankItem();
+    it.name=((p.brands?String(p.brands).split(',')[0]+' ':'')+(p.product_name||'Scanned item')).trim();
+    it.base=b;it.grams=g;$('scan').classList.add('hide');openReview(null);cur.items=[it];rescale(0);
+    $('editor').classList.remove('hide');drawItems();
+    $('note').textContent='From Open Food Facts (per 100 g, scaled to the amount you enter; default is '+(+p.serving_quantity?'one serving':'100 g')+').'+(b.calories?'':' Nutrition data is missing for this product, so please fill it in.');
+  }finally{looking=false}
+}
+
+/* ---------- events ---------- */
+function onFile(e){var f=e.target.files&&e.target.files[0];e.target.value='';if(f)analyze(f)}
 $('cam').addEventListener('change',onFile);$('up').addEventListener('change',onFile);
-$('manualBtn').addEventListener('click',function(){openReview(null);cur.items=[{name:'',portion:'',calories:0}];$('editor').classList.remove('hide');drawItems()});
+$('manualBtn').addEventListener('click',function(){stopScan();$('scan').classList.add('hide');openReview(null);cur.items=[blankItem()];$('editor').classList.remove('hide');drawItems()});
+$('scanBtn').addEventListener('click',startScan);
+$('scanClose').addEventListener('click',function(){stopScan();$('scan').classList.add('hide')});
+$('codeGo').addEventListener('click',function(){lookup($('code').value)});
+$('code').addEventListener('keydown',function(e){if(e.key==='Enter')lookup($('code').value)});
+$('bcfile').addEventListener('change',function(e){var f=e.target.files[0];e.target.value='';if(f)scanPhoto(f)});
 $('cancel').addEventListener('click',closeReview);
-$('addItem').addEventListener('click',function(){cur.items.push({name:'',portion:'',calories:0});drawItems()});
-$('items').addEventListener('input',function(e){var t=e.target;
-  if(t.dataset.n!==undefined)cur.items[+t.dataset.n].name=t.value;
-  if(t.dataset.k!==undefined){cur.items[+t.dataset.k].calories=Math.max(0,Math.round(+t.value||0));sumItems()}});
+$('addItem').addEventListener('click',function(){cur.items.push(blankItem());drawItems()});
+$('items').addEventListener('input',function(e){var t=e.target,i=t.dataset.i;if(i===undefined)return;
+  var it=cur.items[+i],k=t.dataset.k;
+  if(k==='name')it.name=t.value;
+  else if(k==='grams'){it.grams=num(t.value);rescale(+i)}
+  else{it[k]=Math.max(0,+t.value||0);if(it.base)it.base=null}  // manual edit detaches from per-100g scaling
+  sumItems()});
 $('items').addEventListener('click',function(e){var x=e.target.dataset.x;if(x!==undefined){cur.items.splice(+x,1);drawItems()}});
 $('save').addEventListener('click',function(){
-  var items=cur.items.filter(function(i){return i.name.trim()||+i.calories});
+  var items=cur.items.map(normItem).filter(function(i){return i.name.trim()||i.calories});
   if(!items.length){showErr('Add at least one item.');return}
   items.forEach(function(i){if(!i.name.trim())i.name='Food'});
   state=CAL.load();
-  state.entries.push({id:String(Date.now()),ts:Date.now(),date:day,meal:$('meal').value,items:items,total:items.reduce(function(s,i){return s+(+i.calories||0)},0),thumb:cur.thumb});
+  state.entries.push({id:String(Date.now()),ts:Date.now(),date:day,meal:$('meal').value,items:items,total:CAL.sum(items).calories,thumb:cur.thumb});
   persist();closeReview();render();
 });
 $('list').addEventListener('click',function(e){var id=e.target.dataset.del;if(id&&confirm('Delete this entry?')){state=CAL.load();state.entries=state.entries.filter(function(x){return x.id!==id});persist();render()}});
 $('prev').addEventListener('click',function(){day=CAL.shift(day,-1);render()});
 $('next').addEventListener('click',function(){if(day<CAL.today()){day=CAL.shift(day,1);render()}});
 $('goalBtn').addEventListener('click',function(){var v=prompt('Daily calorie goal (kcal):',state.goal),n=Math.round(+v);if(v&&n>0&&n<20000){state=CAL.load();state.goal=n;persist();render()}});
-$('keySave').addEventListener('click',function(){try{localStorage.setItem(KEYNAME,$('key').value.trim());$('key').value='';$('setup').open=false;alert('Gemini key saved in this browser.')}catch(e){alert('Could not save key.')}});
+$('keySave').addEventListener('click',function(){try{localStorage.setItem(KEYNAME,$('key').value.trim().replace(/^["']|["']$/g,''));$('key').value='';$('setup').open=false;alert('Gemini key saved in this browser.')}catch(e){alert('Could not save key.')}});
+$('keyTest').addEventListener('click',async function(){
+  var k=($('key').value||apiKey()).trim().replace(/^["']|["']$/g,''),o=$('keyMsg');
+  if(!k){o.textContent='Enter a key first.';return}
+  o.textContent='Testing…';
+  try{
+    var r=await fetch(BASE+'models?pageSize=200',{headers:{'x-goog-api-key':k}}),j=await r.json();
+    if(!r.ok){o.textContent='Key rejected: '+((j.error&&j.error.message)||('HTTP '+r.status));return}
+    var names=(j.models||[]).filter(function(x){return /flash/.test(x.name)&&(x.supportedGenerationMethods||[]).indexOf('generateContent')>-1}).map(function(x){return x.name.replace('models/','')});
+    o.textContent='Key works. Flash models available: '+(names.slice(0,8).join(', ')||'none found')+'. Save the key if you haven’t.';
+  }catch(e){o.textContent='Network error: could not reach Google.'}
+});
 window.addEventListener('storage',function(e){if(e.key===CAL.KEY){state=CAL.load();render()}});
+window.addEventListener('pagehide',stopScan);
 render();
 })();
 </script></body></html>

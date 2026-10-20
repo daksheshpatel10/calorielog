@@ -39,3 +39,16 @@ input:focus,select:focus{outline:none;border-color:var(--acc)}
 .err{color:var(--warn);font-size:14px;margin-top:8px}.hide{display:none!important}
 details summary{cursor:pointer;color:var(--acc);font-weight:600}
 a{color:var(--acc)}
+.itembox{border:1.5px solid var(--line);border-radius:14px;padding:10px;margin-bottom:10px;background:var(--field)}
+.itembox .item{margin-bottom:6px}
+.ngrid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.ngrid label{font-size:12px;color:var(--mute);display:block}
+.ngrid input{margin-top:2px;padding:8px}
+.nrow{margin-bottom:10px;font-size:14px}
+.mbar{height:8px;background:var(--track);border-radius:99px;overflow:hidden;margin-top:4px}
+.mbar>i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#3ecbff,#7c4dff)}
+.mbar.over>i{background:linear-gradient(90deg,#ffb347,#ff4d4d)}
+details.card>summary{font-weight:700;color:var(--acc);cursor:pointer}
+details.card[open]>summary{margin-bottom:12px}
+#video{width:100%;max-height:300px;border-radius:16px;background:#000;display:block;margin-bottom:10px}
+.macro{font-size:12px;color:var(--mute)}
