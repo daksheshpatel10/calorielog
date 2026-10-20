@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Calorie Log – History</title><link rel="stylesheet" href="style.css">
+</head><body><main>
+<div class="row sp"><h1>📅 Full log</h1><a class="btn g" href="index.html">&#8592; Back to app</a></div>
+<div class="card hero">
+  <div class="row sp"><div><div class="mute">7-day average</div><div class="big"><span id="avg">0</span> <span class="mute">kcal/day</span></div></div>
+  <div class="mute" id="count"></div></div>
+  <div class="row" style="margin-top:12px;flex-wrap:wrap">
+    <button class="grow" id="csv">Save CSV</button><button class="grow" id="json">Save backup (JSON)</button>
+    <label class="btn grow" for="imp">Import backup</label><input type="file" id="imp" accept=".json,application/json" class="hide">
+  </div>
+</div>
+<div id="days"></div>
+<div class="mute card hide" id="empty">No entries yet. Log a meal in the app and it will show up here.</div>
+</main>
+<script src="app.js"></script>
+<script>
+(function(){
+var $=function(i){return document.getElementById(i)},esc=CAL.esc,state;
+function render(){
+  state=CAL.load();
+  var by={};state.entries.forEach(function(e){(by[e.date]=by[e.date]||[]).push(e)});
+  var dates=Object.keys(by).sort().reverse(),tot=function(a){return a.reduce(function(s,e){return s+e.total},0)};
+  var last7=0,today=CAL.today();for(var i=0;i<7;i++){last7+=tot(by[CAL.shift(today,-i)]||[])}
+  $('avg').textContent=Math.round(last7/7);$('count').textContent=state.entries.length+' entries · '+dates.length+' days';
+  $('empty').classList.toggle('hide',dates.length>0);
+  $('days').innerHTML=dates.map(function(d){
+    var es=by[d].sort(function(a,b){return a.ts-b.ts}),t=tot(es),over=t>state.goal;
+    return '<div class="card"><div class="row sp"><h2>'+new Date(d+'T00:00').toLocaleDateString(undefined,{weekday:'long',month:'short',day:'numeric',year:'numeric'})+
+    '</h2><b style="'+(over?'color:var(--warn)':'')+'">'+t+' kcal</b></div><div style="margin-top:8px">'+
+    es.map(function(e){
+      var tm=new Date(e.ts).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});
+      return '<div class="entry">'+(e.thumb?'<img src="'+e.thumb+'" alt="">':'<div class="ph"></div>')+
+      '<div class="t"><b><i class="tag m-'+esc(e.meal)+'">'+esc(e.meal)+'</i> '+tm+'</b><span class="mute" style="white-space:normal">'+esc(e.items.map(function(i){return i.name+' ('+i.calories+')'}).join(', '))+'</span></div>'+
+      '<div><b>'+e.total+'</b></div><button class="g" data-del="'+e.id+'" aria-label="Delete">&#10005;</button></div>';
+    }).join('')+'</div></div>';
+  }).join('');
+}
+$('days').addEventListener('click',function(e){var id=e.target.dataset.del;if(id&&confirm('Delete this entry?')){state.entries=state.entries.filter(function(x){return x.id!==id});CAL.save(state);render()}});
+$('csv').addEventListener('click',function(){CAL.download('calorie-log-'+CAL.today()+'.csv',CAL.csv(state.entries),'text/csv')});
+$('json').addEventListener('click',function(){CAL.download('calorie-log-backup-'+CAL.today()+'.json',JSON.stringify(state),'application/json')});
+$('imp').addEventListener('change',function(e){
+  var f=e.target.files[0];if(!f)return;var r=new FileReader();
+  r.onload=function(){try{var o=JSON.parse(r.result);if(!o||!Array.isArray(o.entries))throw 0;
+    var cur=CAL.load(),ids={};cur.entries.forEach(function(x){ids[x.id]=1});
+    o.entries.forEach(function(x){if(x&&x.id&&!ids[x.id])cur.entries.push(x)});CAL.save(cur);render();alert('Backup merged.')}catch(err){alert('That file is not a valid backup.')}};
+  r.readAsText(f);e.target.value='';
+});
+window.addEventListener('storage',function(e){if(e.key===CAL.KEY)render()});
+render();
+})();
+</script></body></html>

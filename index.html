@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Calorie Log</title><link rel="stylesheet" href="style.css">
+</head><body><main>
+<div class="row sp"><h1>🥗 Calorie Log</h1><button class="g" id="goalBtn">Goal: <span id="goalTxt"></span></button></div>
+
+<div class="card hero">
+  <div class="row sp">
+    <button class="g" id="prev" aria-label="Previous day">&#8249;</button>
+    <div style="text-align:center"><div class="mute" id="dayLabel"></div><div class="big"><span id="total">0</span> <span class="mute">kcal</span></div></div>
+    <button class="g" id="next" aria-label="Next day">&#8250;</button>
+  </div>
+  <div class="bar" id="bar"><i id="fill" style="width:0"></i></div>
+  <div class="mute" id="remain" style="margin-top:8px;text-align:center"></div>
+</div>
+
+<div class="card">
+  <div class="row">
+    <label class="btn p grow" for="cam">&#128247; Take photo</label>
+    <label class="btn grow" for="up">&#128193; Upload</label>
+  </div>
+  <input type="file" id="cam" accept="image/*" capture="environment" class="hide">
+  <input type="file" id="up" accept="image/*" class="hide">
+  <div class="row" style="margin-top:10px"><button class="g grow" id="manualBtn">+ Add manually</button>
+    <a class="btn g grow" href="log.html" target="_blank" rel="noopener">Open full log &#8599;</a></div>
+  <details style="margin-top:8px" id="setup"><summary>Gemini API key (needed for photo analysis)</summary>
+    <p class="mute">Get a free key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>. It is stored only in this browser and sent only to Google’s Gemini API.</p>
+    <div class="row"><input id="key" type="password" placeholder="AIza..." autocomplete="off"><button id="keySave">Save</button></div>
+  </details>
+</div>
+
+<div class="card hide" id="review">
+  <img id="preview" alt="Meal photo" class="hide">
+  <div id="status" class="hide"></div>
+  <div id="editor" class="hide">
+    <select id="meal" style="margin-bottom:10px"><option>Breakfast</option><option>Lunch</option><option>Dinner</option><option>Snack</option></select>
+    <div id="items"></div>
+    <button class="g" id="addItem">+ Add item</button>
+    <div id="note" class="mute" style="margin:8px 0"></div>
+    <div class="row sp" style="margin:8px 0 12px"><b>Total</b><b><span id="rTotal">0</span> kcal</b></div>
+    <div class="row"><button class="grow" id="cancel">Cancel</button><button class="p grow" id="save">Save to log</button></div>
+  </div>
+  <div class="err hide" id="err"></div>
+</div>
+
+<div class="card"><div id="list"></div><div class="mute" id="empty">Nothing logged for this day yet.</div></div>
+<p class="mute" style="text-align:center">Calorie estimates from photos are approximate. Adjust values for accuracy.</p>
+</main>
+<script src="app.js"></script>
+<script>
+(function(){
+var MODEL='gemini-2.5-flash', KEYNAME='calorielog.geminikey';
+var $=function(i){return document.getElementById(i)}, esc=CAL.esc;
+var state=CAL.load(), day=CAL.today(), cur=null;
+function apiKey(){try{return localStorage.getItem(KEYNAME)||''}catch(e){return ''}}
+function showErr(m){$('err').textContent=m;$('err').classList.remove('hide');$('review').classList.remove('hide')}
+function persist(){if(!CAL.save(state))showErr('Could not save to browser storage.')}
+
+function render(){
+  var es=state.entries.filter(function(e){return e.date===day}).sort(function(a,b){return b.ts-a.ts});
+  var tot=es.reduce(function(s,e){return s+e.total},0);
+  $('dayLabel').textContent=day===CAL.today()?'Today':new Date(day+'T00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'});
+  $('total').textContent=tot;$('goalTxt').textContent=state.goal;
+  $('fill').style.width=Math.min(100,tot/state.goal*100)+'%';$('bar').classList.toggle('over',tot>state.goal);
+  var d=state.goal-tot;$('remain').textContent=d>=0?d+' kcal remaining':(-d)+' kcal over goal';
+  $('next').disabled=day>=CAL.today();$('empty').classList.toggle('hide',es.length>0);
+  $('list').innerHTML=es.map(function(e){
+    var tm=new Date(e.ts).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});
+    return '<div class="entry">'+(e.thumb?'<img src="'+e.thumb+'" alt="">':'<div class="ph"></div>')+
+    '<div class="t"><b>'+esc(e.items.map(function(i){return i.name}).join(', ')||e.meal)+'</b><span class="mute"><i class="tag m-'+esc(e.meal)+'">'+esc(e.meal)+'</i> '+tm+'</span></div>'+
+    '<div><b>'+e.total+'</b> <span class="mute">kcal</span></div><button class="g" data-del="'+e.id+'" aria-label="Delete">&#10005;</button></div>';
+  }).join('');
+}
+function mealByTime(){var h=new Date().getHours();return h<10?'Breakfast':h<15?'Lunch':h<21?'Dinner':'Snack'}
+function openReview(img){
+  cur={items:[],thumb:img||null};$('review').classList.remove('hide');$('err').classList.add('hide');
+  $('preview').classList.toggle('hide',!img);if(img)$('preview').src=img;$('meal').value=mealByTime();
+}
+function closeReview(){cur=null;['review','editor','status','err'].forEach(function(i){$(i).classList.add('hide')});$('cam').value='';$('up').value=''}
+function drawItems(){
+  $('items').innerHTML=cur.items.map(function(it,i){
+    return '<div class="item"><input data-n="'+i+'" value="'+esc(it.name).replace(/"/g,'&quot;')+'" placeholder="Food">'+
+    '<input data-k="'+i+'" type="number" inputmode="numeric" min="0" value="'+it.calories+'" aria-label="kcal">'+
+    '<button class="g" data-x="'+i+'" aria-label="Remove">&#10005;</button>'+(it.portion?'<small>'+esc(it.portion)+'</small>':'')+'</div>';
+  }).join('');sumItems();
+}
+function sumItems(){$('rTotal').textContent=cur.items.reduce(function(s,i){return s+(+i.calories||0)},0)}
+
+function resize(file,max,q){
+  return new Promise(function(res,rej){
+    var url=URL.createObjectURL(file),im=new Image();
+    im.onload=function(){
+      var r=Math.min(1,max/Math.max(im.width,im.height)),c=document.createElement('canvas');
+      c.width=Math.round(im.width*r);c.height=Math.round(im.height*r);
+      c.getContext('2d').drawImage(im,0,0,c.width,c.height);URL.revokeObjectURL(url);
+      res(c.toDataURL('image/jpeg',q));
+    };
+    im.onerror=function(){URL.revokeObjectURL(url);rej(new Error('Could not read that image.'))};
+    im.src=url;
+  });
+}
+async function ask(b64){
+  var prompt='You are a nutrition assistant. Estimate what is eaten in this meal photo. Return ONLY JSON: {"items":[{"name":string,"portion":string,"calories":integer}],"note":string}. '+
+  'List each distinct food or drink with a realistic visible portion and its kcal. If there is no food, return {"items":[],"note":"No food detected."}. Keep note under 20 words (e.g., confidence or hidden ingredients).';
+  var r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+MODEL+':generateContent',{method:'POST',headers:{
+    'content-type':'application/json','x-goog-api-key':apiKey()},
+    body:JSON.stringify({contents:[{parts:[{inline_data:{mime_type:'image/jpeg',data:b64}},{text:prompt}]}],
+      generationConfig:{responseMimeType:'application/json',temperature:0.2}})});
+  var j=await r.json();
+  if(!r.ok)throw new Error((j.error&&j.error.message)||('Request failed ('+r.status+')'));
+  var c=j.candidates&&j.candidates[0],parts=(c&&c.content&&c.content.parts)||[];
+  var txt=parts.map(function(p){return p.text||''}).join('').replace(/```json|```/g,'').trim();
+  if(!txt)throw new Error('The model returned no answer');
+  return JSON.parse(txt);
+}
+async function analyze(file){
+  var big,small;
+  try{big=await resize(file,1280,.85);small=await resize(file,160,.6)}catch(e){openReview(null);showErr(e.message);return}
+  openReview(big);cur.thumb=small;
+  var blank=function(){cur.items=[{name:'',portion:'',calories:0}];$('editor').classList.remove('hide');drawItems()};
+  if(!apiKey()){$('setup').open=true;showErr('Add your API key below to analyze photos, or enter the meal manually.');blank();return}
+  $('status').innerHTML='<span class="spin"></span>Analyzing your meal…';$('status').classList.remove('hide');
+  try{
+    var out=await ask(big.split(',')[1]);
+    cur.items=(out.items||[]).map(function(i){return{name:String(i.name||''),portion:String(i.portion||''),calories:Math.max(0,Math.round(+i.calories||0))}});
+    if(!cur.items.length)cur.items=[{name:'',portion:'',calories:0}];
+    $('note').textContent=out.note||'';$('status').classList.add('hide');$('editor').classList.remove('hide');drawItems();
+  }catch(e){$('status').classList.add('hide');showErr((e.message||'Analysis failed')+'. You can edit manually.');blank()}
+}
+function onFile(e){var f=e.target.files&&e.target.files[0];if(f)analyze(f)}
+$('cam').addEventListener('change',onFile);$('up').addEventListener('change',onFile);
+$('manualBtn').addEventListener('click',function(){openReview(null);cur.items=[{name:'',portion:'',calories:0}];$('editor').classList.remove('hide');drawItems()});
+$('cancel').addEventListener('click',closeReview);
+$('addItem').addEventListener('click',function(){cur.items.push({name:'',portion:'',calories:0});drawItems()});
+$('items').addEventListener('input',function(e){var t=e.target;
+  if(t.dataset.n!==undefined)cur.items[+t.dataset.n].name=t.value;
+  if(t.dataset.k!==undefined){cur.items[+t.dataset.k].calories=Math.max(0,Math.round(+t.value||0));sumItems()}});
+$('items').addEventListener('click',function(e){var x=e.target.dataset.x;if(x!==undefined){cur.items.splice(+x,1);drawItems()}});
+$('save').addEventListener('click',function(){
+  var items=cur.items.filter(function(i){return i.name.trim()||+i.calories});
+  if(!items.length){showErr('Add at least one item.');return}
+  items.forEach(function(i){if(!i.name.trim())i.name='Food'});
+  state=CAL.load();
+  state.entries.push({id:String(Date.now()),ts:Date.now(),date:day,meal:$('meal').value,items:items,total:items.reduce(function(s,i){return s+(+i.calories||0)},0),thumb:cur.thumb});
+  persist();closeReview();render();
+});
+$('list').addEventListener('click',function(e){var id=e.target.dataset.del;if(id&&confirm('Delete this entry?')){state=CAL.load();state.entries=state.entries.filter(function(x){return x.id!==id});persist();render()}});
+$('prev').addEventListener('click',function(){day=CAL.shift(day,-1);render()});
+$('next').addEventListener('click',function(){if(day<CAL.today()){day=CAL.shift(day,1);render()}});
+$('goalBtn').addEventListener('click',function(){var v=prompt('Daily calorie goal (kcal):',state.goal),n=Math.round(+v);if(v&&n>0&&n<20000){state=CAL.load();state.goal=n;persist();render()}});
+$('keySave').addEventListener('click',function(){try{localStorage.setItem(KEYNAME,$('key').value.trim());$('key').value='';$('setup').open=false;alert('Gemini key saved in this browser.')}catch(e){alert('Could not save key.')}});
+window.addEventListener('storage',function(e){if(e.key===CAL.KEY){state=CAL.load();render()}});
+render();
+})();
+</script></body></html>
